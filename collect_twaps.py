@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import requests
 
-DATA_DIR = "data"
+DATA_DIR = os.environ.get("DATA_DIR", "data")
 ARCHIVE = os.path.join(DATA_DIR, "twap_archive.jsonl")
 HYPURR = "https://api.hypurrscan.io"
 HL_INFO = "https://api.hyperliquid.xyz/info"
