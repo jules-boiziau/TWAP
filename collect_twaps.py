@@ -3,13 +3,17 @@
 Collecteur forward de TWAPs Hyperliquid (via Hypurrscan) + alertes live.
 
 - Polle /twap/{coin} sur une watchlist toutes les N secondes
-- Archive chaque TWAP dédupliqué par hash dans data/twap_archive.jsonl
+- Archive chaque TWAP dédupliqué par hash dans {DATA_DIR}/twap_archive.jsonl
   (append-only : aucun événement n'est jamais perdu ni réécrit)
 - Met à jour le champ 'ended' quand un TWAP se termine ou est annulé
 - Alerte console quand un TWAP dépasse un seuil de taille relative au volume 24h
+- Heartbeat toutes les ~30 min pour vérifier que le worker est vivant
 
-Tourne en continu (PC ou Railway) :
-    python collect_twaps.py --coins HYPE PURR FARTCOIN kPEPE WIF --interval 60
+Railway : monter un volume sur /data et définir DATA_DIR=/data
+(+ PYTHONUNBUFFERED=1 pour des logs immédiats).
+
+Tourne en continu :
+    python collect_twaps.py --coins HYPE PURR FARTCOIN kPEPE WIF --interval 120
 
 Après 3-4 semaines, convertit l'archive pour le backtest :
     python collect_twaps.py --export
@@ -70,7 +74,7 @@ def poll_coin(coin, seen, ctx, alert_adv_pct):
             return 0
         data = r.json()
     except Exception as e:
-        print(f"[{now_iso()}] {coin}: erreur poll ({e})")
+        print(f"[{now_iso()}] {coin}: erreur poll ({e})", flush=True)
         return 0
 
     new = 0
@@ -98,18 +102,20 @@ def poll_coin(coin, seen, ctx, alert_adv_pct):
             flag = "  <<< ALERTE TAILLE" if adv_pct >= alert_adv_pct else ""
             print(f"[{now_iso()}] NOUVEAU TWAP {side} {coin} "
                   f"~${ntl:,.0f} ({adv_pct:.2f}% du vol 24h) sur {mins}min, "
-                  f"fin {end_at:%d/%m %H:%M} UTC{flag}")
+                  f"fin {end_at:%d/%m %H:%M} UTC{flag}", flush=True)
         elif prev.get("ended") != it.get("ended"):
             append_archive(rec)  # nouvelle ligne = mise à jour d'état
             seen[h] = rec
             status = "ANNULÉ" if it.get("ended") == "error" else "TERMINÉ"
-            print(f"[{now_iso()}] TWAP {coin} {h[:10]}... -> {status}")
+            print(f"[{now_iso()}] TWAP {coin} {h[:10]}... -> {status}",
+                  flush=True)
     return new
 
 
 def export():
-    """Archive -> data/twaps.parquet au format attendu par backtest_twap.py.
-    Garde le dernier état de chaque hash ; exclut annulés et encore actifs."""
+    """Archive -> {DATA_DIR}/twaps.parquet au format attendu par
+    backtest_twap.py. Garde le dernier état de chaque hash ;
+    exclut annulés et encore actifs."""
     seen = load_archive()
     rows = []
     now = pd.Timestamp.now(tz="UTC")
@@ -154,9 +160,11 @@ def main():
 
     seen = load_archive()
     print(f"Collecteur démarré | watchlist: {', '.join(args.coins)} | "
-          f"{len(seen)} TWAPs déjà en archive | poll {args.interval}s")
+          f"{len(seen)} TWAPs déjà en archive | poll {args.interval}s",
+          flush=True)
     ctx_ts = 0
     ctx = {}
+    cycle = 0
     while True:
         try:
             if time.time() - ctx_ts > 300:
@@ -165,11 +173,16 @@ def main():
             for coin in args.coins:
                 poll_coin(coin, seen, ctx, args.alert_adv_pct)
                 time.sleep(1)
+            cycle += 1
+            if cycle % 15 == 0:
+                print(f"[{now_iso()}] heartbeat | {len(seen)} TWAPs en archive "
+                      f"| cycle {cycle}", flush=True)
         except KeyboardInterrupt:
-            print("Arrêt propre. Archive préservée.")
+            print("Arrêt propre. Archive préservée.", flush=True)
             break
         except Exception as e:
-            print(f"[{now_iso()}] erreur boucle: {e} — retry dans 30s")
+            print(f"[{now_iso()}] erreur boucle: {e} — retry dans 30s",
+                  flush=True)
             time.sleep(30)
         time.sleep(args.interval)
 
